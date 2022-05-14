@@ -1,0 +1,240 @@
+---
+title: "ShinyApp_Tobacco_Consumption"
+author: "Jorge Aguilar Valenzuela"
+date: '2022-05-13'
+output: html_document
+runtime: shiny
+---
+
+```{r}
+### Libraries used
+library(shiny)
+library(tidyverse)
+library(ggplot2)
+library(forecast)
+library(TTR)
+library(dplyr)
+```
+
+```{r}
+#Data Preparation
+df = read.csv('TobaccoConsumptiondb.csv',
+              as.is = TRUE,
+              header = T)
+
+```
+
+```{r}
+#Grouping data in different dataframes to create a more accurate time series prediction
+
+##df = Base database with no changes 
+##df1 = Database with all groups dropped except Year and Total, created Average Rolling mean 1& 2 
+##df3 = Database with all groups dropped except Year and Measure, created Average Rolling and Average Measure 
+##df4 = Database with all groups dropped except Year and Total Per Capita, created Average Rolling mean 1& 2
+df1 <- df  %>% group_by(Year) %>% summarise(totalcigs = sum(Total),
+                                            .groups = 'drop')
+
+
+df4 <- df  %>% group_by(Year) %>% summarise(totalcigs = sum(Total.Per.Capita),
+                                            .groups = 'drop')
+
+# Rolling Mean used to calculate the simple moving average over the years
+rollingmean <-
+  function(x, n = 2) {
+    stats::filter(x, rep(1 / n, n), sides = 2)
+  }
+
+totalcigars <- df1$totalcigs
+totalcigars1 <- df4$totalcigs
+
+df1$rollingAverage <- rollingmean(totalcigars)
+
+df4$rollingAverage <- rollingmean(totalcigars1)
+
+#Creating a forecast to match the prediction based on the rolling mean
+df1$rollingAverage2 <-
+  forecast::ma(totalcigars, order = 3, centre = TRUE)
+
+df4$rollingAverage2 <-
+  forecast::ma(totalcigars1, order = 3, centre = TRUE)
+
+df3 <-
+  df %>% group_by(Year, Measure) %>% summarise(totalcigs = sum(Total), .groups = 'drop') %>% mutate(rolling = runMean(totalcigs, 2))
+
+#Grouping the different combustibles in df3 
+df3$rollingMeasure <-
+  as.factor(ifelse(
+    df3$Measure == 'All Combustibles',
+    'R All Combustibles',
+    ifelse(
+      df3$Measure == 'Cigarettes',
+      'R Cigarettes',
+      ifelse(
+        df3$Measure == 'Cigars',
+        'R Cigars',
+        ifelse(
+          df3$Measure == 'Loose Tobacco',
+          'R Loose Tobacco',
+          ifelse(df3$Measure == 'Smokeless Tobacco', 'R Smokeless Tobacco', "jorge se la come")
+        )
+      )
+    )
+  ))
+
+```
+
+```{r}
+ui <- fluidPage(
+  #App title
+  titlePanel("Shiny - First Interactive Visualization Example"),
+  
+  #Sidebar Layout with input and output definitions
+  sidebarLayout(
+    #Sidebar panel for inputs
+    sidebarPanel(
+      #Input: Slider for the choices of colors
+      selectInput(
+        inputId = "color",
+        label = "Choose Color",
+        choices = c(
+          "Red" = "#ff3300",
+          "Blue" = "#3399ff",
+          "Green" = "#66ff33",
+          "Black" = "#000000"
+          
+        ),
+        selected = "Blue",
+        multiple = F
+
+      ),
+      
+      #Input: Slider for the choices of channels
+      selectInput(
+        inputId = "channel",
+        label = "Choose Channel",
+        choices = c(
+          "Measure" = "Measure",
+          "Total.Per.Capita" = "Total.Per.Capita",
+          "Total" = "Total"
+        ),
+        
+        selected = "Total.Per.Capita",
+        multiple = F
+      ),
+      
+      #Input: Slider for the range of years
+      sliderInput(
+        inputId = "range",
+        label = "Year Range",
+        min = 2000,
+        max = 2020,
+        value = c(2000, 2020)
+      )
+      
+    ),
+    # Main panel for displaying outputs
+    mainPanel(
+      #Output: Histogram
+      textOutput("Graphs"),
+      plotOutput(outputId = "distPlot"),
+      plotOutput(outputId = "timeseries")
+      
+    )
+  )
+)
+
+```
+
+```{r}
+# Define server logic required  to draw a histogram
+server <- function(input, output) {
+  #1. It is "reactive" and therefore should be automatically
+  #   re-executed when inputs (input$Year) change
+  #2. Its output type is a plot
+  
+  output$Graphs <- renderText({
+    paste(input$chanel)
+  })
+  
+  #Creating a Bar plot based on Measure, Total and Total per Capita with if's made for 
+  #easier change in the channel layout
+  output$distPlot <- renderPlot({
+    input$channel
+    
+
+    if (input$channel == "Measure") {
+      ggplot(df3, aes(x = Year,y= totalcigs)) +
+        geom_bar(aes(colour = Measure ), 
+                 position= "dodge2",
+                 stat = "identity") +
+        xlim(input$range[1], input$range[2]) +
+        ggtitle("Bar Plot") +
+        theme_light() +
+        theme(plot.title = element_text(size = 15))+
+        labs(subtitle = "Bar plot showing Measure consumed in years ")
+    } else if (input$channel == "Total.Per.Capita") {
+      ggplot(df, aes(x = Year, y = Total.Per.Capita)) +
+        geom_bar(stat = "identity",
+                 fill = input$color,) +
+        xlim(input$range[1], input$range[2]) +
+        ggtitle("Bar Plot") +
+        theme_light() +
+        theme(plot.title = element_text(size = 15))
+    } else if (input$channel == "Total") {
+      ggplot(df, aes(x = Year, y = Total)) +
+        geom_bar(stat = "identity",
+                 fill = input$color,) +
+        xlim(input$range[1], input$range[2]) +
+        ggtitle("Bar Plot") +
+        theme_light() +
+        theme(plot.title = element_text(size = 15))
+    }
+
+
+    
+  })
+  
+  #Creating a Time Series model line plot based on Measure, Total and Total per Capita with if's made for 
+  #easier change in the channel layout
+  output$timeseries <- renderPlot({
+    input$channel
+    
+    if (input$channel == "Total") {
+    ggplot(df1, aes(x = Year)) +
+      geom_line(aes(y = totalcigs), color = input$color) +
+      geom_point(aes(y = totalcigs)) +
+      geom_line(aes(y = rollingAverage), color = "darkblue") +
+      geom_point(aes(y = rollingAverage))+
+      xlim(input$range[1], input$range[2]) +
+      theme_classic() +
+      labs(title = "Time Series") +
+      labs(subtitle = "Time Series showing Total of totalcigs consumed in years ")
+  }else if (input$channel == "Measure") {
+    ggplot(df3, aes(x = Year)) +
+      geom_line(aes(y = totalcigs, colour = Measure)) +
+      geom_line(aes(y = rolling, colour = rollingMeasure))+
+      xlim(input$range[1], input$range[2]) +
+      theme_classic() +
+      labs(title = "Time Series") +
+      labs(subtitle = "Time Series showing Measure of totalcigs consumed in years ")
+  }else if (input$channel == "Total.Per.Capita") {
+    ggplot(df4, aes(x = Year)) +
+      geom_line(aes(y = totalcigs), color = input$color) +
+      geom_point(aes(y = totalcigs)) +
+      geom_line(aes(y = rollingAverage), color = "darkblue") +
+      geom_point(aes(y = rollingAverage))+
+      xlim(input$range[1], input$range[2]) +
+      theme_classic() +
+      labs(title = "Time Series") +
+      labs(subtitle = "Time Series showing the Total Per Capita of totalcigs consumed in years ")
+  }
+    })
+    
+}
+```
+
+```{r}
+#Command to run the app
+shinyApp(ui = ui, server = server)
+
+```
